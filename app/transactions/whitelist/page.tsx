@@ -1,40 +1,11 @@
 "use client";
 
 import { SidebarInset } from "@/components/ui/sidebar";
-import {
-  Breadcrumb,
-  BreadcrumbItem,
-  BreadcrumbLink,
-  BreadcrumbList,
-  BreadcrumbPage,
-  BreadcrumbSeparator,
-} from "@/components/ui/breadcrumb";
-import { Separator } from "@/components/ui/separator";
 
 export default function WhitelistPage() {
   return (
     <SidebarInset>
-      <header className="flex h-16 shrink-0 items-center gap-2 px-4">
-        <Separator
-          orientation="vertical"
-          className="mr-2 data-[orientation=vertical]:h-4"
-        />
-        <Breadcrumb>
-          <BreadcrumbList>
-            <BreadcrumbItem className="hidden md:block">
-              <BreadcrumbLink href="/">Dashboard</BreadcrumbLink>
-            </BreadcrumbItem>
-            <BreadcrumbSeparator className="hidden md:block" />
-            <BreadcrumbItem>
-              <BreadcrumbPage>Whitelist</BreadcrumbPage>
-            </BreadcrumbItem>
-          </BreadcrumbList>
-        </Breadcrumb>
-      </header>
       <div className="flex flex-1 flex-col gap-4 p-4 pt-0">
-        <p className="text-muted-foreground text-sm">
-          Manage whitelisted transactions and settings.
-        </p>
         <div className="flex flex-1 flex-col">
           <h1 className="text-xl font-semibold mb-4">Whitelist</h1>
           <p>Manage whitelist entries here (e.g., add/remove items).</p>
