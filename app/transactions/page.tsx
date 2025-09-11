@@ -1,6 +1,7 @@
 "use client";
 
 import { SidebarInset } from "@/components/ui/sidebar";
+import { DataTable } from "@/components/data-table";
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -10,8 +11,11 @@ import {
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb";
 import { Separator } from "@/components/ui/separator";
+import Link from "next/link";
+import data from "./raw-and-filtered/data.json"; // Adjust path to your data.json
+import { Button } from "@/components/ui/button";
 
-export default function WhitelistPage() {
+export default function TransactionsPage() {
   return (
     <SidebarInset>
       <header className="flex h-16 shrink-0 items-center gap-2 px-4">
@@ -26,19 +30,29 @@ export default function WhitelistPage() {
             </BreadcrumbItem>
             <BreadcrumbSeparator className="hidden md:block" />
             <BreadcrumbItem>
-              <BreadcrumbPage>Whitelist</BreadcrumbPage>
+              <BreadcrumbPage>Transactions Overview</BreadcrumbPage>
             </BreadcrumbItem>
           </BreadcrumbList>
         </Breadcrumb>
       </header>
       <div className="flex flex-1 flex-col gap-4 p-4 pt-0">
         <p className="text-muted-foreground text-sm">
-          Manage whitelisted transactions and settings.
+          View and manage all transactions, including raw and filtered data or whitelist.
         </p>
         <div className="flex flex-1 flex-col">
-          <h1 className="text-xl font-semibold mb-4">Whitelist</h1>
-          <p>Manage whitelist entries here (e.g., add/remove items).</p>
-          {/* Add table or form as needed */}
+          <div className="@container/main flex flex-1 flex-col gap-2">
+            <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6">
+              <DataTable data={data} />
+              <div className="flex gap-2 pt-4">
+                <Link href="/transactions/raw-and-filtered">
+                  <Button variant="outline">Go to Raw & Filtered</Button>
+                </Link>
+                <Link href="/transactions/whitelist">
+                  <Button variant="outline">Go to Whitelist</Button>
+                </Link>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </SidebarInset>

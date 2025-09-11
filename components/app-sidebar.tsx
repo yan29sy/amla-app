@@ -31,58 +31,59 @@ const data = {
     email: "m@example.com",
     avatar: "/avatars/shadcn.jpg",
   }, 
-  navMain: [
-    {
-      title: "Transactions",
-      url: "#",
-      icon: SquareTerminal,
-      isActive: true,
-      items: [
-        {
-          title: "Raw and Filtered",
-          url: "#",
-        },
-        {
-          title: "Whitelist",
-          url: "#",
-        },
-      ],
-    },
-    {
-      title: "Documentations",
-      url: "#",
-      icon: BookOpen,
-      items: [
-        {
-          title: "Exports",
-          url: "#",
-        },
-        {
-          title: "Changelog",
-          url: "#",
-        },
-      ],
-    },
-    {
-      title: "Settings",
-      url: "#",
-      icon: Settings2,
-      items: [
-        {
-          title: "General",
-          url: "#",
-        },
-        {
-          title: "Team",
-          url: "#",
-        },
-        {
-          title: "Limits",
-          url: "#",
-        },
-      ],
-    },
-  ],
+  // In data.navMain
+navMain: [
+  {
+    title: "Transactions",
+    url: "/transactions",
+    icon: SquareTerminal,
+    isActive: true,
+    items: [
+      {
+        title: "Raw and Filtered",
+        url: "/transactions/raw-and-filtered",
+      },
+      {
+        title: "Whitelist",
+        url: "/transactions/whitelist",
+      },
+    ],
+  },
+  {
+    title: "Documentations",
+    url: "/documentations",
+    icon: BookOpen,
+    items: [
+      {
+        title: "Exports",
+        url: "/documentations/exports",
+      },
+      {
+        title: "Changelog",
+        url: "/documentations/changelog",
+      },
+    ],
+  },
+  {
+    title: "Settings",
+    url: "/settings",
+    icon: Settings2,
+    items: [
+      {
+        title: "General",
+        url: "/settings/general",
+      },
+      {
+        title: "Team",
+        url: "/settings/team",
+      },
+      {
+        title: "Limits",
+        url: "/settings/limits",
+      },
+    ],
+  },
+],
 }
 
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
