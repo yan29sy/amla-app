@@ -41,9 +41,8 @@ import {
 import { IconChevronDown, IconChevronLeft, IconChevronRight, IconChevronsLeft, IconChevronsRight, IconLayoutColumns } from "@tabler/icons-react"
 import { z } from "zod"
 import { whitelistSchema } from "@/types/whitelist"
-import { useWhitelist } from "@/contexts/whitelist-context"
 
-// Whitelist columns
+// Define whitelist columns
 const whitelistColumns: ColumnDef<z.infer<typeof whitelistSchema>>[] = [
   {
     accessorKey: "id",
@@ -70,6 +69,20 @@ const whitelistColumns: ColumnDef<z.infer<typeof whitelistSchema>>[] = [
     header: "Added By",
   },
 ]
+
+// Client-side context to share whitelistData (temporary for demo)
+const WhitelistContext = React.createContext<{
+  whitelistData: z.infer<typeof whitelistSchema>[];
+  setWhitelistData: React.Dispatch<React.SetStateAction<z.infer<typeof whitelistSchema>[]>>;
+} | null>(null)
+
+export function useWhitelist() {
+  const context = React.useContext(WhitelistContext)
+  if (!context) {
+    throw new Error("useWhitelist must be used within a WhitelistProvider")
+  }
+  return context
+}
 
 export default function WhitelistPage() {
   const { whitelistData } = useWhitelist()

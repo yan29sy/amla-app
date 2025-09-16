@@ -18,7 +18,6 @@ import {
   SortableContext,
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable"
-import { CSS } from "@dnd-kit/utilities"
 import {
   IconChevronDown,
   IconChevronLeft,
@@ -44,11 +43,16 @@ import {
   VisibilityState,
 } from "@tanstack/react-table"
 import { toast } from "sonner"
-import { useRef, useState, useEffect } from "react"
+import { useRef, useState, useEffect, useMemo } from "react"
 import * as XLSX from "xlsx"
 import { useId } from "react"
-import { differenceInDays, subDays, parseISO } from "date-fns"
-
+import { differenceInDays, parseISO } from "date-fns"
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { Button } from "@/components/ui/button"
 import {
@@ -84,12 +88,14 @@ import {
 import { z } from "zod"
 import { transactionSchema } from "@/types/transactions"
 import { flagsSchema } from "@/types/flags"
+import { whitelistSchema } from "@/types/whitelist"
+import { useWhitelist } from "@/contexts/whitelist-context"
 import { SetThresh } from "@/components/set-thresh"
 import { SetFlags } from "@/components/set-flags"
 import { transactionColumns, flagsColumns } from "@/components/table-columns"
 
 // Constants
-const HIGH_RISK_COUNTRIES = ['CU', 'IR', 'KP', 'SY'] // Example high-risk country codes
+const HIGH_RISK_COUNTRIES = ['CU', 'IR', 'KP', 'SY']
 const SUSP_CODE_DESCRIPTIONS: Record<string, string> = {
   SC1: 'No underlying legal or trade obligation',
   SC2: 'Suspicious use of same email for multiple accounts',
@@ -172,6 +178,7 @@ export function DataTable({
   transactions?: z.infer<typeof transactionSchema>[]
   flags?: z.infer<typeof flagsSchema>[]
 }) {
+  const { whitelistData, setWhitelistData } = useWhitelist()
   const [transactionData, setTransactionData] = useState<z.infer<typeof transactionSchema>[]>(initialTransactionData)
   const [flagsData, setFlagsData] = useState<z.infer<typeof flagsSchema>[]>(initialFlagsData)
   const [thresholds, setThresholds] = useState<Thresholds>({
@@ -213,11 +220,12 @@ export function DataTable({
     sourceFund: false,
     currencyCode: false,
     cityCode: false,
+    select: true,
   })
   const [flagsColumnVisibility, setFlagsColumnVisibility] = useState<VisibilityState>({
     reason: false,
     suspCodeDesc: false,
-    notes: false,
+    notes: true,
   })
   const [transactionFilters, setTransactionFilters] = useState<ColumnFiltersState>([])
   const [flagsFilters, setFlagsFilters] = useState<ColumnFiltersState>([])
@@ -227,6 +235,11 @@ export function DataTable({
     pageSize: 10,
   })
   const [importType, setImportType] = useState<"Deposit" | "Withdrawal" | "Buy/Sell" | null>(null)
+  const [isNoteDialogOpen, setIsNoteDialogOpen] = useState(false)
+  const [currentFlagId, setCurrentFlagId] = useState<number | null>(null)
+  const [noteText, setNoteText] = useState("")
+  const [isWhitelistDialogOpen, setIsWhitelistDialogOpen] = useState(false)
+  const [whitelistForm, setWhitelistForm] = useState({ reason: "", addedBy: "" })
   const sortableId = useId()
   const sensors = useSensors(
     useSensor(MouseSensor, {}),
@@ -234,6 +247,167 @@ export function DataTable({
     useSensor(KeyboardSensor, {})
   )
   const fileRef = useRef<HTMLInputElement | null>(null)
+  const isMobile = useIsMobile()
+
+  // Process Excel/CSV file
+  const processSheet = (data: (string | number | Date | undefined)[][], importType: "Deposit" | "Withdrawal" | "Buy/Sell"): z.infer<typeof transactionSchema>[] => {
+    const buySellHeaders = [
+      'DATE', 'CONF NO.', 'CUSTOMER CODE', 'CUSTOMER NAME', 'A/E', 'STOCK CODE',
+      'NO. OF SHARES', 'UNIT PRICE', 'CLEARING ACCOUNT', 'COMM.', 'VAT PAYABLE',
+      'DST', 'TRANSFER FEE', 'VAT WTAX', 'PSE FEE', 'SCCP FEE/PDC FEE',
+      'CUSTOMER ACCOUNT', 'USER', 'STAT'
+    ] as const
+    const depositHeaders = [
+      'DATE', 'O.R. NO.', 'A/C#', 'NAME OF CUSTOMERS', 'AMOUNT', 'BANK CODE',
+      'CHECK NO.', 'CHECK DATE', 'USER ID', 'STAT'
+    ] as const
+    const buySellColumnIndices = [0, 1, 2, 5, 6, 8, 11, 13, 16, 19, 22, 25, 27, 29, 30, 33, 35, 38, 41]
+    const depositColumnIndices = [0, 3, 8, 10, 19, 23, 27, 29, 31, 33]
+    const minColumns = importType === "Buy/Sell" ? 19 : 10
+    const minNonEmpty = importType === "Buy/Sell" ? 5 : 2
+
+    console.log(`Processing ${data.length} rows for ${importType}`)
+    if (data.length > 0 && data[0].length < minColumns) {
+      console.warn(`File has ${data[0].length} columns, expected at least ${minColumns}. Attempting to process.`)
+      toast.warning(`File has ${data[0].length} columns, expected at least ${minColumns}`)
+    }
+
+    const headers = importType === "Buy/Sell" ? buySellHeaders : depositHeaders
+    const columnIndices = importType === "Buy/Sell" ? buySellColumnIndices : depositColumnIndices
+
+    let processedData: (BuySellRow | DepositRow)[] = data
+      .slice(importType === "Buy/Sell" ? 15 : 13)
+      .map((row, rowIndex) => {
+        const selectedRow = columnIndices.map(index => row[index] !== undefined ? row[index] : '')
+        const obj: { [key: string]: string | number | Date | undefined } = {}
+        headers.forEach((header, i) => {
+          obj[header] = selectedRow[i]
+        })
+        console.log(`Row ${rowIndex + 1} after column selection:`, obj)
+        return obj as BuySellRow | DepositRow
+      })
+      .filter((row, rowIndex) => {
+        const isInvalid = Object.values(row).some(cell =>
+          typeof cell === 'string' &&
+          (cell.toLowerCase().includes('invoice total') ||
+           cell.toLowerCase().includes('grand total') ||
+           cell.toLowerCase().includes('sub total'))
+        )
+        if (isInvalid) {
+          console.log(`Row ${rowIndex + 1} filtered out due to invalid content`)
+          return false
+        }
+        return true
+      })
+      .filter((row, rowIndex) => {
+        const nonEmptyCount = Object.values(row).filter(val => val !== '' && val != null && val !== undefined).length
+        if (nonEmptyCount < minNonEmpty) {
+          console.log(`Row ${rowIndex + 1} filtered out: only ${nonEmptyCount} non-empty values`)
+          return false
+        }
+        return true
+      })
+
+    let globalSellingMode = false
+    if (importType === "Buy/Sell") {
+      let lastConfNo = ''
+      let lastCustomerCode = ''
+      processedData = processedData.filter((row: BuySellRow, rowIndex) => {
+        if (row['DATE'] && typeof row['DATE'] === 'string') {
+          const dateLower = row['DATE'].toLowerCase()
+          if (dateLower === 'selling') {
+            globalSellingMode = true
+            console.log(`Row ${rowIndex + 1} filtered out: Selling marker`)
+            return false
+          }
+          if (dateLower === 'buying') {
+            globalSellingMode = false
+            console.log(`Row ${rowIndex + 1} filtered out: Buying marker`)
+            return false
+          }
+        }
+        row['CONF NO.'] = row['CONF NO.'] || lastConfNo
+        row['CUSTOMER CODE'] = row['CUSTOMER CODE'] || lastCustomerCode
+        lastConfNo = row['CONF NO.'] || lastConfNo
+        lastCustomerCode = row['CUSTOMER CODE'] || lastCustomerCode
+        console.log(`Row ${rowIndex + 1} after forward fill:`, row)
+        return true
+      })
+    }
+
+    let lastDate: string | undefined = undefined
+    processedData = processedData.map((row: BuySellRow | DepositRow, rowIndex) => {
+      if (row['DATE']) {
+        try {
+          const date = new Date(row['DATE'])
+          if (!isNaN(date.getTime())) {
+            lastDate = date.toISOString().split('T')[0]
+            row['DATE'] = lastDate
+          } else {
+            row['DATE'] = lastDate
+          }
+        } catch {
+          row['DATE'] = lastDate
+        }
+      } else {
+        row['DATE'] = lastDate
+      }
+      console.log(`Row ${rowIndex + 1} after date processing:`, row)
+      return row
+    })
+
+    processedData = processedData.filter((row, rowIndex) => {
+      if (row['DATE'] === undefined) {
+        console.log(`Row ${rowIndex + 1} filtered out: undefined DATE`)
+        return false
+      }
+      return true
+    })
+
+    const mappedData = processedData.map((row: BuySellRow | DepositRow, index: number) => {
+      const baseTransaction: z.infer<typeof transactionSchema> = {
+        id: transactionData.length + index + 1,
+        date: row['DATE'] ? String(row['DATE']) : new Date().toISOString().split('T')[0],
+        orNo: String((importType === "Buy/Sell" ? row['CONF NO.'] : row['O.R. NO.']) || ''),
+        acNum: String((importType === "Buy/Sell" ? row['CUSTOMER ACCOUNT'] : row['A/C#']) || ''),
+        name: String((importType === "Buy/Sell" ? row['CUSTOMER NAME'] : row['NAME OF CUSTOMERS']) || ''),
+        amount: Number(row['AMOUNT'] || 0),
+        bankCode: String((importType === "Buy/Sell" ? row['CLEARING ACCOUNT'] : row['BANK CODE']) || ''),
+        country: '',
+        isCash: importType === "Buy/Sell" ? false : true,
+        checkNo: importType === "Buy/Sell" ? '' : String(row['CHECK NO.'] || ''),
+        checkDate: importType === "Buy/Sell" ? '' : (row['CHECK DATE'] ? new Date(row['CHECK DATE']).toISOString().split('T')[0] : ''),
+        userId: String((importType === "Buy/Sell" ? row['USER'] : row['USER ID']) || ''),
+        stat: String(row['STAT'] || ''),
+        type: importType === "Buy/Sell" ? ((row as BuySellRow)['A/E'] === 'B' ? 'Buy' : 'Sell') : importType,
+        email: '',
+        employmentStatus: '',
+        isFlagged: false,
+        flagReason: '',
+        balance: 0,
+        contactChanges: '',
+        mot: 0,
+        purpose: '',
+        productType: importType === "Buy/Sell" ? String((row as BuySellRow)['STOCK CODE'] || '') : '',
+        idType: '',
+        idNo: '',
+        sourceFund: '',
+        currencyCode: 'USD',
+        cityCode: '',
+      }
+      try {
+        const validated = transactionSchema.parse(baseTransaction)
+        console.log(`Processed row ${index + 1}:`, validated)
+        return validated
+      } catch (error) {
+        console.error(`Invalid transaction data at index ${index}:`, error)
+        return null
+      }
+    }).filter((item): item is z.infer<typeof transactionSchema> => item !== null && item !== undefined)
+
+    console.log(`Processed ${mappedData.length} rows for ${importType}`)
+    return mappedData
+  }
 
   // Flagging functions
   const flagHighValue = (row: z.infer<typeof transactionSchema>, thresholds: Thresholds): RawFlag[] => {
@@ -535,12 +709,11 @@ export function DataTable({
     return flags
   }
 
-  // Generate flags from transactionData
+  // Generate flags
   const generateFlags = (transactions: z.infer<typeof transactionSchema>[]): z.infer<typeof flagsSchema>[] => {
     const flags: z.infer<typeof flagsSchema>[] = []
     let flagId = 1
 
-    // Group transactions by account
     const accountGroups = new Map<string, z.infer<typeof transactionSchema>[]>()
     transactions.forEach(tx => {
       if (tx.acNum) {
@@ -551,7 +724,6 @@ export function DataTable({
       }
     })
 
-    // Apply single-row flags
     transactions.forEach(tx => {
       const rowFlags = [
         ...flagHighValue(tx, thresholds),
@@ -580,7 +752,6 @@ export function DataTable({
       })
     })
 
-    // Apply multi-row flags per account
     accountGroups.forEach((accountTxs, acNum) => {
       const groupFlags = [
         ...flagQuickWithdraw(accountTxs, thresholds),
@@ -619,18 +790,18 @@ export function DataTable({
     return flags
   }
 
-  // Update flags when transactionData or thresholds/scores change
+  // Update flags when transactionData, thresholds, or scores change
   useEffect(() => {
     const newFlags = generateFlags(transactionData)
     setFlagsData(newFlags)
   }, [transactionData, thresholds, flagScores])
 
-  const transactionDataIds = React.useMemo<UniqueIdentifier[]>(
+  const transactionDataIds = useMemo<UniqueIdentifier[]>(
     () => transactionData.filter(item => item !== null && item !== undefined && typeof item.id === 'number').map(({ id }) => id),
     [transactionData]
   )
 
-  const flagsDataIds = React.useMemo<UniqueIdentifier[]>(
+  const flagsDataIds = useMemo<UniqueIdentifier[]>(
     () => flagsData.filter(item => item !== null && item !== undefined && typeof item.id === 'number').map(({ id }) => id),
     [flagsData]
   )
@@ -683,14 +854,21 @@ export function DataTable({
     getSortedRowModel: getSortedRowModel(),
     getFacetedRowModel: getFacetedRowModel(),
     getFacetedUniqueValues: getFacetedUniqueValues(),
+    meta: {
+      onEditNote: (flagId: number, currentNote: string) => {
+        setCurrentFlagId(flagId)
+        setNoteText(currentNote)
+        setIsNoteDialogOpen(true)
+      },
+    },
   })
 
-  function handleDragEnd(
+  const handleDragEnd = (
     event: DragEndEvent,
     table: typeof transactionTable | typeof flagsTable,
     dataIds: UniqueIdentifier[],
     setData: React.Dispatch<React.SetStateAction<z.infer<typeof transactionSchema>[] | z.infer<typeof flagsSchema>[]>>,
-  ) {
+  ) => {
     const { active, over } = event
     if (active && over && active.id !== over.id) {
       setData((data) => {
@@ -699,166 +877,6 @@ export function DataTable({
         return arrayMove(data, oldIndex, newIndex)
       })
     }
-  }
-
-  // Process Excel/CSV file
-  const processSheet = (data: (string | number | Date | undefined)[][], importType: "Deposit" | "Withdrawal" | "Buy/Sell"): z.infer<typeof transactionSchema>[] => {
-    const buySellHeaders = [
-      'DATE', 'CONF NO.', 'CUSTOMER CODE', 'CUSTOMER NAME', 'A/E', 'STOCK CODE',
-      'NO. OF SHARES', 'UNIT PRICE', 'CLEARING ACCOUNT', 'COMM.', 'VAT PAYABLE',
-      'DST', 'TRANSFER FEE', 'VAT WTAX', 'PSE FEE', 'SCCP FEE/PDC FEE',
-      'CUSTOMER ACCOUNT', 'USER', 'STAT'
-    ] as const
-    const depositHeaders = [
-      'DATE', 'O.R. NO.', 'A/C#', 'NAME OF CUSTOMERS', 'AMOUNT', 'BANK CODE',
-      'CHECK NO.', 'CHECK DATE', 'USER ID', 'STAT'
-    ] as const
-    const buySellColumnIndices = [0, 1, 2, 5, 6, 8, 11, 13, 16, 19, 22, 25, 27, 29, 30, 33, 35, 38, 41]
-    const depositColumnIndices = [0, 3, 8, 10, 19, 23, 27, 29, 31, 33]
-    const minColumns = importType === "Buy/Sell" ? 19 : 10
-    const minNonEmpty = importType === "Buy/Sell" ? 5 : 2
-
-    console.log(`Processing ${data.length} rows for ${importType}`)
-    if (data.length > 0 && data[0].length < minColumns) {
-      console.warn(`File has ${data[0].length} columns, expected at least ${minColumns}. Attempting to process.`)
-      toast.warning(`File has ${data[0].length} columns, expected at least ${minColumns}`)
-    }
-
-    const headers = importType === "Buy/Sell" ? buySellHeaders : depositHeaders
-    const columnIndices = importType === "Buy/Sell" ? buySellColumnIndices : depositColumnIndices
-
-    let processedData: (BuySellRow | DepositRow)[] = data
-      .slice(importType === "Buy/Sell" ? 15 : 13)
-      .map((row, rowIndex) => {
-        const selectedRow = columnIndices.map(index => row[index] !== undefined ? row[index] : '')
-        const obj: { [key: string]: string | number | Date | undefined } = {}
-        headers.forEach((header, i) => {
-          obj[header] = selectedRow[i]
-        })
-        console.log(`Row ${rowIndex + 1} after column selection:`, obj)
-        return obj as BuySellRow | DepositRow
-      })
-      .filter((row, rowIndex) => {
-        const isInvalid = Object.values(row).some(cell =>
-          typeof cell === 'string' &&
-          (cell.toLowerCase().includes('invoice total') ||
-           cell.toLowerCase().includes('grand total') ||
-           cell.toLowerCase().includes('sub total'))
-        )
-        if (isInvalid) {
-          console.log(`Row ${rowIndex + 1} filtered out due to invalid content`)
-          return false
-        }
-        return true
-      })
-      .filter((row, rowIndex) => {
-        const nonEmptyCount = Object.values(row).filter(val => val !== '' && val != null && val !== undefined).length
-        if (nonEmptyCount < minNonEmpty) {
-          console.log(`Row ${rowIndex + 1} filtered out: only ${nonEmptyCount} non-empty values`)
-          return false
-        }
-        return true
-      })
-
-    let globalSellingMode = false
-    if (importType === "Buy/Sell") {
-      let lastConfNo = ''
-      let lastCustomerCode = ''
-      processedData = processedData.filter((row: BuySellRow, rowIndex) => {
-        if (row['DATE'] && typeof row['DATE'] === 'string') {
-          const dateLower = row['DATE'].toLowerCase()
-          if (dateLower === 'selling') {
-            globalSellingMode = true
-            console.log(`Row ${rowIndex + 1} filtered out: Selling marker`)
-            return false
-          }
-          if (dateLower === 'buying') {
-            globalSellingMode = false
-            console.log(`Row ${rowIndex + 1} filtered out: Buying marker`)
-            return false
-          }
-        }
-        row['CONF NO.'] = row['CONF NO.'] || lastConfNo
-        row['CUSTOMER CODE'] = row['CUSTOMER CODE'] || lastCustomerCode
-        lastConfNo = row['CONF NO.'] || lastConfNo
-        lastCustomerCode = row['CUSTOMER CODE'] || lastCustomerCode
-        console.log(`Row ${rowIndex + 1} after forward fill:`, row)
-        return true
-      })
-    }
-
-    let lastDate: string | undefined = undefined
-    processedData = processedData.map((row: BuySellRow | DepositRow, rowIndex) => {
-      if (row['DATE']) {
-        try {
-          const date = new Date(row['DATE'])
-          if (!isNaN(date.getTime())) {
-            lastDate = date.toISOString().split('T')[0]
-            row['DATE'] = lastDate
-          } else {
-            row['DATE'] = lastDate
-          }
-        } catch {
-          row['DATE'] = lastDate
-        }
-      } else {
-        row['DATE'] = lastDate
-      }
-      console.log(`Row ${rowIndex + 1} after date processing:`, row)
-      return row
-    })
-
-    processedData = processedData.filter((row, rowIndex) => {
-      if (row['DATE'] === undefined) {
-        console.log(`Row ${rowIndex + 1} filtered out: undefined DATE`)
-        return false
-      }
-      return true
-    })
-
-    const mappedData = processedData.map((row: BuySellRow | DepositRow, index: number) => {
-      const baseTransaction: z.infer<typeof transactionSchema> = {
-        id: transactionData.length + index + 1,
-        date: row['DATE'] ? String(row['DATE']) : new Date().toISOString().split('T')[0],
-        orNo: String((importType === "Buy/Sell" ? row['CONF NO.'] : row['O.R. NO.']) || ''),
-        acNum: String((importType === "Buy/Sell" ? row['CUSTOMER ACCOUNT'] : row['A/C#']) || ''),
-        name: String((importType === "Buy/Sell" ? row['CUSTOMER NAME'] : row['NAME OF CUSTOMERS']) || ''),
-        amount: Number(row['AMOUNT'] || 0),
-        bankCode: String((importType === "Buy/Sell" ? row['CLEARING ACCOUNT'] : row['BANK CODE']) || ''),
-        country: '',
-        isCash: importType === "Buy/Sell" ? false : true,
-        checkNo: importType === "Buy/Sell" ? '' : String(row['CHECK NO.'] || ''),
-        checkDate: importType === "Buy/Sell" ? '' : (row['CHECK DATE'] ? new Date(row['CHECK DATE']).toISOString().split('T')[0] : ''),
-        userId: String((importType === "Buy/Sell" ? row['USER'] : row['USER ID']) || ''),
-        stat: String(row['STAT'] || ''),
-        type: importType === "Buy/Sell" ? ((row as BuySellRow)['A/E'] === 'B' ? 'Buy' : 'Sell') : importType,
-        email: '',
-        employmentStatus: '',
-        isFlagged: false,
-        flagReason: '',
-        balance: 0,
-        contactChanges: '',
-        mot: 0,
-        purpose: '',
-        productType: importType === "Buy/Sell" ? String((row as BuySellRow)['STOCK CODE'] || '') : '',
-        idType: '',
-        idNo: '',
-        sourceFund: '',
-        currencyCode: 'USD',
-        cityCode: '',
-      }
-      try {
-        const validated = transactionSchema.parse(baseTransaction)
-        console.log(`Processed row ${index + 1}:`, validated)
-        return validated
-      } catch (error) {
-        console.error(`Invalid transaction data at index ${index}:`, error)
-        return null
-      }
-    }).filter((item): item is z.infer<typeof transactionSchema> => item !== null && item !== undefined)
-
-    console.log(`Processed ${mappedData.length} rows for ${importType}`)
-    return mappedData
   }
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -931,13 +949,60 @@ export function DataTable({
     fileRef.current?.click()
   }
 
-  // Handlers for SetThresh and SetFlags
   const handleThresholdChange = (newThresholds: Partial<Thresholds>) => {
     setThresholds(prev => ({ ...prev, ...newThresholds }))
   }
 
   const handleFlagScoresChange = (newScores: Partial<FlagScores>) => {
     setFlagScores(prev => ({ ...prev, ...newScores }))
+  }
+
+  const handleEditNote = (flagId: number, note: string) => {
+    setFlagsData(prev =>
+      prev.map(flag =>
+        flag.id === flagId ? { ...flag, notes: note } : flag
+      )
+    )
+    setIsNoteDialogOpen(false)
+    setCurrentFlagId(null)
+    setNoteText("")
+    toast.success("Note updated successfully")
+  }
+
+  const handleAddToWhitelist = () => {
+    const selectedRows = transactionTable.getSelectedRowModel().rows
+    if (selectedRows.length === 0) {
+      toast.error("No transactions selected")
+      return
+    }
+    setIsWhitelistDialogOpen(true)
+  }
+
+  const handleWhitelistSubmit = () => {
+    const selectedRows = transactionTable.getSelectedRowModel().rows
+    if (selectedRows.length === 0) {
+      toast.error("No transactions selected")
+      return
+    }
+    const newWhitelistItems = selectedRows.map(row => ({
+      id: whitelistData.length + 1,
+      acNum: row.original.acNum,
+      name: row.original.name,
+      reason: whitelistForm.reason,
+      dateAdded: new Date().toISOString().split('T')[0],
+      addedBy: whitelistForm.addedBy,
+    }))
+    try {
+      const validatedItems = newWhitelistItems.map(item => whitelistSchema.parse(item))
+      setWhitelistData(prev => [...prev, ...validatedItems])
+      setRowSelection({})
+      setIsWhitelistDialogOpen(false)
+      setWhitelistForm({ reason: "", addedBy: "" })
+      toast.success(`Added ${validatedItems.length} transactions to whitelist`)
+    } catch (error) {
+      console.error("Invalid whitelist data:", error)
+      toast.error("Failed to add to whitelist")
+    }
   }
 
   return (
@@ -970,7 +1035,8 @@ export function DataTable({
                   className="w-[140px] h-8"
                   variant="outline"
                   size="sm"
-                  onClick={() => toast.info("Set to Whitelist")}
+                  onClick={handleAddToWhitelist}
+                  disabled={Object.keys(rowSelection).length === 0}
                 >
                   Add to Whitelist
                 </Button>
@@ -995,34 +1061,6 @@ export function DataTable({
             </TabsContent>
           </div>
           <div className="flex items-center gap-2">
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="sm">
-                  <IconLayoutColumns className="mr-2 h-4 w-4" />
-                  <span className="hidden lg:inline">Customize Columns</span>
-                  <span className="lg:hidden">Columns</span>
-                  <IconChevronDown className="ml-2 h-4 w-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-56">
-                {(transactionTable.getState().pagination.pageIndex === 0 ? transactionTable : flagsTable)
-                  .getAllColumns()
-                  .filter(
-                    (column) =>
-                      typeof column.accessorFn !== "undefined" && column.getCanHide()
-                  )
-                  .map((column) => (
-                    <DropdownMenuCheckboxItem
-                      key={column.id}
-                      className="capitalize"
-                      checked={column.getIsVisible()}
-                      onCheckedChange={(value) => column.toggleVisibility(!!value)}
-                    >
-                      {column.id.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
-                    </DropdownMenuCheckboxItem>
-                  ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
             <TabsContent value="raw" className="m-0">
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
@@ -1062,6 +1100,34 @@ export function DataTable({
                 <span className="hidden lg:inline">Export</span>
               </Button>
             </TabsContent>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm">
+                  <IconLayoutColumns className="mr-2 h-4 w-4" />
+                  <span className="hidden lg:inline">Customize Columns</span>
+                  <span className="lg:hidden">Columns</span>
+                  <IconChevronDown className="ml-2 h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-56">
+                {(transactionTable.getState().pagination.pageIndex === 0 ? transactionTable : flagsTable)
+                  .getAllColumns()
+                  .filter(
+                    (column) =>
+                      typeof column.accessorFn !== "undefined" && column.getCanHide()
+                  )
+                  .map((column) => (
+                    <DropdownMenuCheckboxItem
+                      key={column.id}
+                      className="capitalize"
+                      checked={column.getIsVisible()}
+                      onCheckedChange={(value) => column.toggleVisibility(!!value)}
+                    >
+                      {column.id.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
+                    </DropdownMenuCheckboxItem>
+                  ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
       </div>
@@ -1337,6 +1403,67 @@ export function DataTable({
           </div>
         </div>
       </TabsContent>
+
+      {/* Note Edit Dialog */}
+      <Dialog open={isNoteDialogOpen} onOpenChange={setIsNoteDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit Note</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-4">
+            <Label htmlFor="note">Note</Label>
+            <Input
+              id="note"
+              value={noteText}
+              onChange={(e) => setNoteText(e.target.value)}
+              placeholder="Enter note"
+            />
+            <Button
+              onClick={() => currentFlagId && handleEditNote(currentFlagId, noteText)}
+              disabled={!noteText.trim()}
+            >
+              Save Note
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Whitelist Dialog */}
+      <Dialog open={isWhitelistDialogOpen} onOpenChange={setIsWhitelistDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Add to Whitelist</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-4">
+            <div className="grid grid-cols-4 items-center gap-4">
+              <Label htmlFor="reason" className="col-span-2">Reason</Label>
+              <Input
+                id="reason"
+                value={whitelistForm.reason}
+                onChange={(e) => setWhitelistForm(prev => ({ ...prev, reason: e.target.value }))}
+                placeholder="Reason for whitelisting"
+                className="col-span-2"
+              />
+            </div>
+            <div className="grid grid-cols-4 items-center gap-4">
+              <Label htmlFor="addedBy" className="col-span-2">Added By</Label>
+              <Input
+                id="addedBy"
+                value={whitelistForm.addedBy}
+                onChange={(e) => setWhitelistForm(prev => ({ ...prev, addedBy: e.target.value }))}
+                placeholder="User ID"
+                className="col-span-2"
+              />
+            </div>
+            <Button
+              onClick={handleWhitelistSubmit}
+              disabled={!whitelistForm.reason.trim() || !whitelistForm.addedBy.trim()}
+            >
+              Add to Whitelist
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </Tabs>
   )
 }

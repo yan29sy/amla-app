@@ -12,7 +12,7 @@ import {
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu"
 import { Badge } from "@/components/ui/badge"
-import { IconChevronDown, IconCircleCheckFilled, IconDotsVertical, IconLoader, IconGripVertical } from "@tabler/icons-react"
+import { IconChevronDown, IconCircleCheckFilled, IconDotsVertical, IconLoader, IconGripVertical, IconEdit } from "@tabler/icons-react"
 import { TransactionCellViewer } from "@/components/transaction-cell-viewer"
 import { FlagsCellViewer } from "@/components/flags-cell-viewer"
 import { useSortable } from "@dnd-kit/sortable"
@@ -36,6 +36,42 @@ export function DragHandle({ id }: { id: number }) {
 
 // Columns for transactions table (Raw tab)
 export const transactionColumns: ColumnDef<z.infer<typeof transactionSchema>>[] = [
+  {
+    id: "actions",
+    cell: ({ row }) => (
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant="ghost"
+            className="data-[state=open]:bg-muted text-muted-foreground flex size-8"
+            size="icon"
+          >
+            <IconDotsVertical />
+            <span className="sr-only">Open menu</span>
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-40">
+          <DropdownMenuItem
+            onClick={() => navigator.clipboard.writeText(row.original.id.toString())}
+            aria-label={`Copy transaction ID ${row.original.id}`}
+          >
+            Copy Transaction ID
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onClick={() => navigator.clipboard.writeText(row.original.acNum)}
+            aria-label={`Copy account number ${row.original.acNum}`}
+          >
+            Copy Account Number
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem>View Customer Details</DropdownMenuItem>
+          <DropdownMenuItem>View Transaction Details</DropdownMenuItem>
+          <DropdownMenuItem>Add Note</DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    ),
+    enableHiding: false,
+  },
   {
     id: "drag",
     header: () => null,
@@ -290,9 +326,13 @@ export const transactionColumns: ColumnDef<z.infer<typeof transactionSchema>>[] 
     header: "City Code",
     cell: ({ row }) => <div className="font-mono">{row.original.cityCode}</div>,
   },
+]
+
+// Columns for flags table (Filtered tab)
+export const flagsColumns: ColumnDef<z.infer<typeof flagsSchema>>[] = [
   {
     id: "actions",
-    cell: ({ row }) => (
+    cell: ({ row, table }) => (
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button
@@ -307,7 +347,13 @@ export const transactionColumns: ColumnDef<z.infer<typeof transactionSchema>>[] 
         <DropdownMenuContent align="end" className="w-40">
           <DropdownMenuItem
             onClick={() => navigator.clipboard.writeText(row.original.id.toString())}
-            aria-label={`Copy transaction ID ${row.original.id}`}
+            aria-label={`Copy flag ID ${row.original.id}`}
+          >
+            Copy Flag ID
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onClick={() => navigator.clipboard.writeText(row.original.transactionId.toString())}
+            aria-label={`Copy transaction ID ${row.original.transactionId}`}
           >
             Copy Transaction ID
           </DropdownMenuItem>
@@ -319,16 +365,18 @@ export const transactionColumns: ColumnDef<z.infer<typeof transactionSchema>>[] 
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem>View Customer Details</DropdownMenuItem>
-          <DropdownMenuItem>View Transaction Details</DropdownMenuItem>
-          <DropdownMenuItem>Add Note</DropdownMenuItem>
+          <DropdownMenuItem>View Flag Details</DropdownMenuItem>
+          <DropdownMenuItem
+            onClick={() => table.options.meta?.onEditNote?.(row.original.id, row.original.notes)}
+            aria-label="Edit note"
+          >
+            Add/Edit Note
+          </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
     ),
+    enableHiding: false,
   },
-]
-
-// Columns for flags table (Filtered tab)
-export const flagsColumns: ColumnDef<z.infer<typeof flagsSchema>>[] = [
   {
     id: "drag",
     header: () => null,
@@ -487,47 +535,16 @@ export const flagsColumns: ColumnDef<z.infer<typeof flagsSchema>>[] = [
   {
     accessorKey: "notes",
     header: "Notes",
-    cell: ({ row }) => <div>{row.original.notes}</div>,
-  },
-  {
-    id: "actions",
-    cell: ({ row }) => (
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button
-            variant="ghost"
-            className="data-[state=open]:bg-muted text-muted-foreground flex size-8"
-            size="icon"
-          >
-            <IconDotsVertical />
-            <span className="sr-only">Open menu</span>
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-40">
-          <DropdownMenuItem
-            onClick={() => navigator.clipboard.writeText(row.original.id.toString())}
-            aria-label={`Copy flag ID ${row.original.id}`}
-          >
-            Copy Flag ID
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            onClick={() => navigator.clipboard.writeText(row.original.transactionId.toString())}
-            aria-label={`Copy transaction ID ${row.original.transactionId}`}
-          >
-            Copy Transaction ID
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            onClick={() => navigator.clipboard.writeText(row.original.acNum)}
-            aria-label={`Copy account number ${row.original.acNum}`}
-          >
-            Copy Account Number
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem>View Customer Details</DropdownMenuItem>
-          <DropdownMenuItem>View Flag Details</DropdownMenuItem>
-          <DropdownMenuItem>Add Note</DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
+    cell: ({ row, table }) => (
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={() => table.options.meta?.onEditNote?.(row.original.id, row.original.notes)}
+        aria-label="Edit note"
+      >
+        <IconEdit className="h-4 w-4" />
+      </Button>
     ),
+    enableHiding: true,
   },
 ]
