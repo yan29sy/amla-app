@@ -44,9 +44,10 @@ import {
   VisibilityState,
 } from "@tanstack/react-table"
 import { toast } from "sonner"
-import { useRef, useState } from "react"
+import { useRef, useState, useEffect } from "react"
 import * as XLSX from "xlsx"
 import { useId } from "react"
+import { differenceInDays, subDays, parseISO } from "date-fns"
 
 import { useIsMobile } from "@/hooks/use-mobile"
 import { Button } from "@/components/ui/button"
@@ -87,45 +88,18 @@ import { SetThresh } from "@/components/set-thresh"
 import { SetFlags } from "@/components/set-flags"
 import { transactionColumns, flagsColumns } from "@/components/table-columns"
 
-// Mock data for flags (temporary, to be replaced later)
-const flagsData: z.infer<typeof flagsSchema>[] = [
-  {
-    id: 1,
-    transactionId: 2,
-    flag: "high_value",
-    suspCode: "SC3",
-    reason: "High value: 750000 > 500000",
-    score: 1,
-    suspCodeDesc: "Amount not commensurate with client capacity",
-    acNum: "ACC0002",
-    name: "Jane Smith",
-    type: "Withdrawal",
-    amount: 750000,
-    date: "2025-07-02",
-    bankCode: "BANK001",
-    country: "USA",
-    notes: "Reviewed, no further action needed",
-  },
-  {
-    id: 2,
-    transactionId: 2,
-    flag: "flagged_account",
-    suspCode: "SC1",
-    reason: "Flagged account (High Risk) transacted > 500000",
-    score: 3,
-    suspCodeDesc: "No underlying legal or trade obligation",
-    acNum: "ACC0002",
-    name: "Jane Smith",
-    type: "Withdrawal",
-    amount: 750000,
-    date: "2025-07-02",
-    bankCode: "BANK001",
-    country: "USA",
-    notes: "",
-  },
-]
+// Constants
+const HIGH_RISK_COUNTRIES = ['CU', 'IR', 'KP', 'SY'] // Example high-risk country codes
+const SUSP_CODE_DESCRIPTIONS: Record<string, string> = {
+  SC1: 'No underlying legal or trade obligation',
+  SC2: 'Suspicious use of same email for multiple accounts',
+  SC3: 'Amount not commensurate with client capacity',
+  SC4: 'Unusual cash transaction activity',
+  SC5: 'Unusual activity after inactivity or contact changes',
+  PC1: 'High cumulative cash deposits',
+}
 
-// Interfaces for Excel row data
+// Interfaces
 interface BuySellRow {
   'DATE'?: string | number | Date;
   'CONF NO.'?: string | number;
@@ -161,15 +135,73 @@ interface DepositRow {
   'STAT'?: string;
 }
 
+interface RawFlag {
+  flag: string;
+  susp_code: string;
+  reason: string;
+  'A/C#'?: string;
+  'NAME OF CUSTOMERS'?: string;
+  Type?: string;
+  AMOUNT?: number;
+  DATE?: string;
+  'BANK CODE'?: string;
+}
+
+interface Thresholds {
+  high_value: number;
+  cash_deposit: number;
+  time_period_days: number;
+  quick_withdraw_pct: number;
+  customer_cash_total: number;
+  num_deposits: number;
+  multiple_deposits_total: number;
+  inactivity_days: number;
+  position_threshold: number;
+  undeployed_cash: number;
+  num_contact_changes: number;
+}
+
+interface FlagScores {
+  [key: string]: number;
+}
+
 export function DataTable({
   transactions: initialTransactionData = [],
-  flags: initialFlagsData = flagsData,
+  flags: initialFlagsData = [],
 }: {
   transactions?: z.infer<typeof transactionSchema>[]
   flags?: z.infer<typeof flagsSchema>[]
 }) {
   const [transactionData, setTransactionData] = useState<z.infer<typeof transactionSchema>[]>(initialTransactionData)
   const [flagsData, setFlagsData] = useState<z.infer<typeof flagsSchema>[]>(initialFlagsData)
+  const [thresholds, setThresholds] = useState<Thresholds>({
+    high_value: 500000,
+    cash_deposit: 100000,
+    time_period_days: 30,
+    quick_withdraw_pct: 50,
+    customer_cash_total: 1000000,
+    num_deposits: 3,
+    multiple_deposits_total: 500000,
+    inactivity_days: 90,
+    position_threshold: 1000000,
+    undeployed_cash: 500000,
+    num_contact_changes: 2,
+  })
+  const [flagScores, setFlagScores] = useState<FlagScores>({
+    high_value: 1,
+    cash_deposit: 1,
+    quick_withdraw: 1,
+    customer_cash_total: 1,
+    multiple_deposits: 1,
+    deposit_high_risk: 1,
+    flagged_account: 1,
+    total_value_over_time: 1,
+    inactivity_deposit: 1,
+    position_employment: 1,
+    undeployed_cash: 1,
+    contact_changes: 1,
+    same_email_different_names: 1,
+  })
   const [rowSelection, setRowSelection] = useState({})
   const [transactionColumnVisibility, setTransactionColumnVisibility] = useState<VisibilityState>({
     contactChanges: false,
@@ -203,13 +235,403 @@ export function DataTable({
   )
   const fileRef = useRef<HTMLInputElement | null>(null)
 
+  // Flagging functions
+  const flagHighValue = (row: z.infer<typeof transactionSchema>, thresholds: Thresholds): RawFlag[] => {
+    if (row.amount > thresholds.high_value) {
+      return [{
+        flag: 'high_value',
+        susp_code: 'SC3',
+        reason: `High value: ${row.amount.toFixed(2)} > ${thresholds.high_value}`,
+        'A/C#': row.acNum,
+        'NAME OF CUSTOMERS': row.name,
+        Type: row.type,
+        AMOUNT: row.amount,
+        DATE: row.date,
+        'BANK CODE': row.bankCode,
+      }]
+    }
+    return []
+  }
+
+  const flagLargeCashDeposit = (row: z.infer<typeof transactionSchema>, thresholds: Thresholds): RawFlag[] => {
+    if (row.type === 'Deposit' && row.isCash && row.amount > thresholds.cash_deposit) {
+      return [{
+        flag: 'cash_deposit',
+        susp_code: 'SC4',
+        reason: `Large cash deposit: ${row.amount.toFixed(2)} > ${thresholds.cash_deposit}`,
+        'A/C#': row.acNum,
+        'NAME OF CUSTOMERS': row.name,
+        Type: row.type,
+        AMOUNT: row.amount,
+        DATE: row.date,
+        'BANK CODE': row.bankCode,
+      }]
+    }
+    return []
+  }
+
+  const flagQuickWithdraw = (df: z.infer<typeof transactionSchema>[], thresholds: Thresholds): RawFlag[] => {
+    if (!df.length) return []
+    const sortedDf = [...df].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+    const deposits = sortedDf.filter(row => row.type === 'Deposit')
+    const withdrawals = sortedDf.filter(row => row.type === 'Withdrawal')
+    const flags: RawFlag[] = []
+    deposits.forEach(dep => {
+      const depDate = new Date(dep.date)
+      withdrawals.forEach(wd => {
+        const wdDate = new Date(wd.date)
+        if (
+          differenceInDays(wdDate, depDate) <= thresholds.time_period_days &&
+          wd.amount > (dep.amount * thresholds.quick_withdraw_pct / 100)
+        ) {
+          flags.push({
+            flag: 'quick_withdraw',
+            susp_code: 'SC1',
+            reason: `Quick withdraw ${wd.amount.toFixed(2)} after deposit ${dep.amount.toFixed(2)}`,
+            'A/C#': wd.acNum,
+            'NAME OF CUSTOMERS': wd.name,
+            Type: wd.type,
+            AMOUNT: wd.amount,
+            DATE: wd.date,
+            'BANK CODE': wd.bankCode,
+          })
+        }
+      })
+    })
+    return flags
+  }
+
+  const flagCustomerCashTotal = (df: z.infer<typeof transactionSchema>[], thresholds: Thresholds): RawFlag[] => {
+    if (!df.length) return []
+    const cashDeps = df.filter(row => row.type === 'Deposit' && row.isCash)
+    const total = cashDeps.reduce((sum, row) => sum + row.amount, 0)
+    if (total > thresholds.customer_cash_total) {
+      return [{
+        flag: 'customer_cash_total',
+        susp_code: 'PC1',
+        reason: `Total cash deposits: ${total.toFixed(2)} > ${thresholds.customer_cash_total}`,
+        'A/C#': cashDeps[0]?.acNum || '',
+        'NAME OF CUSTOMERS': cashDeps[0]?.name || '',
+        Type: 'Deposit',
+        AMOUNT: total,
+        DATE: df[df.length - 1]?.date || new Date().toISOString().split('T')[0],
+        'BANK CODE': 'Multiple',
+      }]
+    }
+    return []
+  }
+
+  const flagMultipleDepositsSources = (df: z.infer<typeof transactionSchema>[], thresholds: Thresholds): RawFlag[] => {
+    if (!df.length) return []
+    const maxDate = new Date(df.reduce((max, row) => Math.max(new Date(row.date).getTime(), new Date(max).getTime()), 0))
+    const recentDeps = df.filter(row => row.type === 'Deposit' && differenceInDays(maxDate, new Date(row.date)) <= thresholds.time_period_days)
+    const uniqueBanks = new Set(recentDeps.map(row => row.bankCode)).size
+    const totalAmount = recentDeps.reduce((sum, row) => sum + row.amount, 0)
+    if (uniqueBanks >= thresholds.num_deposits && totalAmount > thresholds.multiple_deposits_total) {
+      return [{
+        flag: 'multiple_deposits',
+        susp_code: 'SC4',
+        reason: `Multiple deposits from ${uniqueBanks} sources, total ${totalAmount.toFixed(2)}`,
+        'A/C#': recentDeps[0]?.acNum || '',
+        'NAME OF CUSTOMERS': recentDeps[0]?.name || '',
+        Type: 'Deposit',
+        AMOUNT: totalAmount,
+        DATE: maxDate.toISOString().split('T')[0],
+        'BANK CODE': 'Multiple',
+      }]
+    }
+    return []
+  }
+
+  const flagDepositHighRisk = (row: z.infer<typeof transactionSchema>, thresholds: Thresholds): RawFlag[] => {
+    if (row.type === 'Deposit' && HIGH_RISK_COUNTRIES.includes(row.country) && row.amount > thresholds.high_value) {
+      return [{
+        flag: 'deposit_high_risk',
+        susp_code: 'SC1',
+        reason: `Deposit from high-risk jurisdiction ${row.country} > ${thresholds.high_value}`,
+        'A/C#': row.acNum,
+        'NAME OF CUSTOMERS': row.name,
+        Type: row.type,
+        AMOUNT: row.amount,
+        DATE: row.date,
+        'BANK CODE': row.bankCode,
+      }]
+    }
+    return []
+  }
+
+  const flagFlaggedAccount = (row: z.infer<typeof transactionSchema>, thresholds: Thresholds): RawFlag[] => {
+    if (row.isFlagged && row.amount > thresholds.high_value) {
+      return [{
+        flag: 'flagged_account',
+        susp_code: 'SC1',
+        reason: `Flagged account (${row.flagReason}) transacted > ${thresholds.high_value}`,
+        'A/C#': row.acNum,
+        'NAME OF CUSTOMERS': row.name,
+        Type: row.type,
+        AMOUNT: row.amount,
+        DATE: row.date,
+        'BANK CODE': row.bankCode,
+      }]
+    }
+    return []
+  }
+
+  const flagTotalValueOverTime = (df: z.infer<typeof transactionSchema>[], thresholds: Thresholds): RawFlag[] => {
+    if (!df.length) return []
+    const maxDate = new Date(df.reduce((max, row) => Math.max(new Date(row.date).getTime(), new Date(max).getTime()), 0))
+    const recentDf = df.filter(row => differenceInDays(maxDate, new Date(row.date)) <= thresholds.time_period_days)
+    const flags: RawFlag[] = []
+    const types = [...new Set(recentDf.map(row => row.type))]
+    types.forEach(transType => {
+      const typeTotal = recentDf.filter(row => row.type === transType).reduce((sum, row) => sum + row.amount, 0)
+      if (typeTotal > thresholds.high_value) {
+        flags.push({
+          flag: 'total_value_over_time',
+          susp_code: 'SC3',
+          reason: `Total ${transType} value ${typeTotal.toFixed(2)} > ${thresholds.high_value} in ${thresholds.time_period_days} days`,
+          'A/C#': recentDf[0]?.acNum || '',
+          'NAME OF CUSTOMERS': recentDf[0]?.name || '',
+          Type: transType,
+          AMOUNT: typeTotal,
+          DATE: maxDate.toISOString().split('T')[0],
+          'BANK CODE': 'Multiple',
+        })
+      }
+    })
+    return flags
+  }
+
+  const flagInactivityDeposit = (df: z.infer<typeof transactionSchema>[], thresholds: Thresholds): RawFlag[] => {
+    if (!df.length) return []
+    const sortedDf = [...df].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+    const flags: RawFlag[] = []
+    sortedDf.forEach((row, idx) => {
+      const prevDate = idx > 0 ? new Date(sortedDf[idx - 1].date) : null
+      const daysSinceLast = prevDate ? differenceInDays(new Date(row.date), prevDate) : 0
+      if (daysSinceLast > thresholds.inactivity_days && row.type === 'Deposit' && row.amount >= thresholds.high_value) {
+        flags.push({
+          flag: 'inactivity_deposit',
+          susp_code: 'SC5',
+          reason: `Deposit ${row.amount.toFixed(2)} >= ${thresholds.high_value} after ${daysSinceLast} days inactivity`,
+          'A/C#': row.acNum,
+          'NAME OF CUSTOMERS': row.name,
+          Type: row.type,
+          AMOUNT: row.amount,
+          DATE: row.date,
+          'BANK CODE': row.bankCode,
+        })
+      }
+    })
+    return flags
+  }
+
+  const flagPositionEmployment = (df: z.infer<typeof transactionSchema>[], thresholds: Thresholds): RawFlag[] => {
+    if (!df.length || !df.some(row => row.employmentStatus)) return []
+    const totalPosition = df.reduce((sum, row) => sum + row.amount, 0)
+    const employment = df.find(row => row.employmentStatus)?.employmentStatus || 'unknown'
+    if (totalPosition > thresholds.position_threshold && ['unemployed', 'student'].includes(employment)) {
+      return [{
+        flag: 'position_employment',
+        susp_code: 'SC3',
+        reason: `Total position ${totalPosition.toFixed(2)} > ${thresholds.position_threshold} with employment ${employment}`,
+        'A/C#': df[0]?.acNum || '',
+        'NAME OF CUSTOMERS': df[0]?.name || '',
+        Type: 'Group',
+        AMOUNT: totalPosition,
+        DATE: df[df.length - 1]?.date || new Date().toISOString().split('T')[0],
+        'BANK CODE': 'Multiple',
+      }]
+    }
+    return []
+  }
+
+  const flagUndeployedCash = (df: z.infer<typeof transactionSchema>[], thresholds: Thresholds): RawFlag[] => {
+    if (!df.length) return []
+    const maxDate = new Date(df.reduce((max, row) => Math.max(new Date(row.date).getTime(), new Date(max).getTime()), 0))
+    const recentDf = df.filter(row => differenceInDays(maxDate, new Date(row.date)) <= thresholds.time_period_days)
+    if (recentDf.length && recentDf.every(row => row.type !== 'Withdrawal')) {
+      const avgBalance = recentDf.reduce((sum, row) => sum + row.balance, 0) / recentDf.length
+      if (avgBalance >= thresholds.undeployed_cash) {
+        return [{
+          flag: 'undeployed_cash',
+          susp_code: 'SC1',
+          reason: `Undeployed cash ${avgBalance.toFixed(2)} >= ${thresholds.undeployed_cash} over ${thresholds.time_period_days} days (no withdrawals)`,
+          'A/C#': recentDf[0]?.acNum || '',
+          'NAME OF CUSTOMERS': recentDf[0]?.name || '',
+          Type: 'Group',
+          AMOUNT: avgBalance,
+          DATE: maxDate.toISOString().split('T')[0],
+          'BANK CODE': 'Multiple',
+        }]
+      }
+    }
+    return []
+  }
+
+  const flagContactChanges = (df: z.infer<typeof transactionSchema>[], thresholds: Thresholds): RawFlag[] => {
+    if (!df.length) return []
+    const allChanges: Date[] = []
+    df.forEach(row => {
+      if (row.contactChanges) {
+        const changes = row.contactChanges.split(',').map(c => parseISO(c.trim())).filter(d => !isNaN(d.getTime()))
+        allChanges.push(...changes)
+      }
+    })
+    if (!allChanges.length) return []
+    const maxDate = new Date(df.reduce((max, row) => Math.max(new Date(row.date).getTime(), new Date(max).getTime()), 0))
+    const recentChanges = allChanges.filter(d => differenceInDays(maxDate, d) <= thresholds.time_period_days)
+    if (recentChanges.length >= thresholds.num_contact_changes) {
+      return [{
+        flag: 'contact_changes',
+        susp_code: 'SC5',
+        reason: `${recentChanges.length} critical contact changes in ${thresholds.time_period_days} days >= ${thresholds.num_contact_changes}`,
+        'A/C#': df[0]?.acNum || '',
+        'NAME OF CUSTOMERS': df[0]?.name || '',
+        Type: 'Group',
+        AMOUNT: 0,
+        DATE: maxDate.toISOString().split('T')[0],
+        'BANK CODE': 'Multiple',
+      }]
+    }
+    return []
+  }
+
+  const flagSameEmailDifferentNames = (df: z.infer<typeof transactionSchema>[]): RawFlag[] => {
+    if (!df.length) return []
+    const filteredDf = df.filter(row => row.email && row.email !== '')
+    if (!filteredDf.length) return []
+    const emailGroups = new Map<string, Set<string>>()
+    filteredDf.forEach(row => {
+      if (row.email && row.name) {
+        if (!emailGroups.has(row.email)) {
+          emailGroups.set(row.email, new Set())
+        }
+        emailGroups.get(row.email)!.add(row.name)
+      }
+    })
+    const flags: RawFlag[] = []
+    emailGroups.forEach((names, email) => {
+      if (names.size > 1) {
+        const emailDf = filteredDf.filter(row => row.email === email)
+        const uniqueAccounts = new Set(emailDf.map(row => row.acNum))
+        uniqueAccounts.forEach(acc => {
+          const accDf = emailDf.filter(row => row.acNum === acc)
+          const name = accDf[0]?.name || 'Unknown'
+          flags.push({
+            flag: 'same_email_different_names',
+            susp_code: 'SC2',
+            reason: `Email ${email} used by multiple names: ${[...names].join(', ')}`,
+            'A/C#': acc,
+            'NAME OF CUSTOMERS': name,
+            Type: 'Group',
+            AMOUNT: 0,
+            DATE: emailDf[emailDf.length - 1]?.date || new Date().toISOString().split('T')[0],
+            'BANK CODE': 'Multiple',
+          })
+        })
+      }
+    })
+    return flags
+  }
+
+  // Generate flags from transactionData
+  const generateFlags = (transactions: z.infer<typeof transactionSchema>[]): z.infer<typeof flagsSchema>[] => {
+    const flags: z.infer<typeof flagsSchema>[] = []
+    let flagId = 1
+
+    // Group transactions by account
+    const accountGroups = new Map<string, z.infer<typeof transactionSchema>[]>()
+    transactions.forEach(tx => {
+      if (tx.acNum) {
+        if (!accountGroups.has(tx.acNum)) {
+          accountGroups.set(tx.acNum, [])
+        }
+        accountGroups.get(tx.acNum)!.push(tx)
+      }
+    })
+
+    // Apply single-row flags
+    transactions.forEach(tx => {
+      const rowFlags = [
+        ...flagHighValue(tx, thresholds),
+        ...flagLargeCashDeposit(tx, thresholds),
+        ...flagDepositHighRisk(tx, thresholds),
+        ...flagFlaggedAccount(tx, thresholds),
+      ]
+      rowFlags.forEach(rawFlag => {
+        flags.push({
+          id: flagId++,
+          transactionId: tx.id,
+          flag: rawFlag.flag,
+          suspCode: rawFlag.susp_code,
+          reason: rawFlag.reason,
+          score: flagScores[rawFlag.flag] || 1,
+          suspCodeDesc: SUSP_CODE_DESCRIPTIONS[rawFlag.susp_code] || '',
+          acNum: rawFlag['A/C#'] || tx.acNum,
+          name: rawFlag['NAME OF CUSTOMERS'] || tx.name,
+          type: rawFlag.Type || tx.type,
+          amount: rawFlag.AMOUNT || tx.amount,
+          date: rawFlag.DATE || tx.date,
+          bankCode: rawFlag['BANK CODE'] || tx.bankCode,
+          country: tx.country,
+          notes: '',
+        })
+      })
+    })
+
+    // Apply multi-row flags per account
+    accountGroups.forEach((accountTxs, acNum) => {
+      const groupFlags = [
+        ...flagQuickWithdraw(accountTxs, thresholds),
+        ...flagCustomerCashTotal(accountTxs, thresholds),
+        ...flagMultipleDepositsSources(accountTxs, thresholds),
+        ...flagTotalValueOverTime(accountTxs, thresholds),
+        ...flagInactivityDeposit(accountTxs, thresholds),
+        ...flagPositionEmployment(accountTxs, thresholds),
+        ...flagUndeployedCash(accountTxs, thresholds),
+        ...flagContactChanges(accountTxs, thresholds),
+        ...flagSameEmailDifferentNames(accountTxs),
+      ]
+      groupFlags.forEach(rawFlag => {
+        const refTx = accountTxs[0] || { id: 0, acNum: '', name: '', type: '', amount: 0, date: new Date().toISOString().split('T')[0], bankCode: '', country: '' }
+        flags.push({
+          id: flagId++,
+          transactionId: refTx.id,
+          flag: rawFlag.flag,
+          suspCode: rawFlag.susp_code,
+          reason: rawFlag.reason,
+          score: flagScores[rawFlag.flag] || 1,
+          suspCodeDesc: SUSP_CODE_DESCRIPTIONS[rawFlag.susp_code] || '',
+          acNum: rawFlag['A/C#'] || refTx.acNum,
+          name: rawFlag['NAME OF CUSTOMERS'] || refTx.name,
+          type: rawFlag.Type || refTx.type,
+          amount: rawFlag.AMOUNT || refTx.amount,
+          date: rawFlag.DATE || refTx.date,
+          bankCode: rawFlag['BANK CODE'] || refTx.bankCode,
+          country: refTx.country,
+          notes: '',
+        })
+      })
+    })
+
+    console.log(`Generated ${flags.length} flags:`, flags)
+    return flags
+  }
+
+  // Update flags when transactionData or thresholds/scores change
+  useEffect(() => {
+    const newFlags = generateFlags(transactionData)
+    setFlagsData(newFlags)
+  }, [transactionData, thresholds, flagScores])
+
   const transactionDataIds = React.useMemo<UniqueIdentifier[]>(
-    () => transactionData.map(({ id }) => id),
+    () => transactionData.filter(item => item !== null && item !== undefined && typeof item.id === 'number').map(({ id }) => id),
     [transactionData]
   )
 
   const flagsDataIds = React.useMemo<UniqueIdentifier[]>(
-    () => flagsData.map(({ id }) => id),
+    () => flagsData.filter(item => item !== null && item !== undefined && typeof item.id === 'number').map(({ id }) => id),
     [flagsData]
   )
 
@@ -279,45 +701,35 @@ export function DataTable({
     }
   }
 
-  // Process Excel/CSV file to mimic Python converter logic
+  // Process Excel/CSV file
   const processSheet = (data: (string | number | Date | undefined)[][], importType: "Deposit" | "Withdrawal" | "Buy/Sell"): z.infer<typeof transactionSchema>[] => {
-    // Headers for Buy/Sell (raw_buying.csv, raw_selling.csv)
     const buySellHeaders = [
       'DATE', 'CONF NO.', 'CUSTOMER CODE', 'CUSTOMER NAME', 'A/E', 'STOCK CODE',
       'NO. OF SHARES', 'UNIT PRICE', 'CLEARING ACCOUNT', 'COMM.', 'VAT PAYABLE',
       'DST', 'TRANSFER FEE', 'VAT WTAX', 'PSE FEE', 'SCCP FEE/PDC FEE',
       'CUSTOMER ACCOUNT', 'USER', 'STAT'
     ] as const
-    // Headers for Deposit/Withdrawal (raw_deposit.csv)
     const depositHeaders = [
       'DATE', 'O.R. NO.', 'A/C#', 'NAME OF CUSTOMERS', 'AMOUNT', 'BANK CODE',
       'CHECK NO.', 'CHECK DATE', 'USER ID', 'STAT'
     ] as const
-    // Column indices for Buy/Sell (0-based: A, B, C, F, G, I, L, N, Q, T, W, Z, AB, AD, AE, AH, AJ, AM, AP)
     const buySellColumnIndices = [0, 1, 2, 5, 6, 8, 11, 13, 16, 19, 22, 25, 27, 29, 30, 33, 35, 38, 41]
-    // Column indices for Deposit/Withdrawal (0-based: A, D, I, K, T, X, AB, AD, AF, AH)
     const depositColumnIndices = [0, 3, 8, 10, 19, 23, 27, 29, 31, 33]
     const minColumns = importType === "Buy/Sell" ? 19 : 10
     const minNonEmpty = importType === "Buy/Sell" ? 5 : 2
 
-    // Log input data
     console.log(`Processing ${data.length} rows for ${importType}`)
-
-    // Warn if column count is lower than expected, but proceed
     if (data.length > 0 && data[0].length < minColumns) {
       console.warn(`File has ${data[0].length} columns, expected at least ${minColumns}. Attempting to process.`)
       toast.warning(`File has ${data[0].length} columns, expected at least ${minColumns}`)
     }
 
-    // Select headers and indices based on importType
     const headers = importType === "Buy/Sell" ? buySellHeaders : depositHeaders
     const columnIndices = importType === "Buy/Sell" ? buySellColumnIndices : depositColumnIndices
 
-    // Process data
     let processedData: (BuySellRow | DepositRow)[] = data
       .slice(importType === "Buy/Sell" ? 15 : 13)
       .map((row, rowIndex) => {
-        // Select columns, use empty string for undefined values
         const selectedRow = columnIndices.map(index => row[index] !== undefined ? row[index] : '')
         const obj: { [key: string]: string | number | Date | undefined } = {}
         headers.forEach((header, i) => {
@@ -327,7 +739,6 @@ export function DataTable({
         return obj as BuySellRow | DepositRow
       })
       .filter((row, rowIndex) => {
-        // Remove rows with invalid content
         const isInvalid = Object.values(row).some(cell =>
           typeof cell === 'string' &&
           (cell.toLowerCase().includes('invoice total') ||
@@ -341,7 +752,6 @@ export function DataTable({
         return true
       })
       .filter((row, rowIndex) => {
-        // Remove rows with insufficient non-empty values
         const nonEmptyCount = Object.values(row).filter(val => val !== '' && val != null && val !== undefined).length
         if (nonEmptyCount < minNonEmpty) {
           console.log(`Row ${rowIndex + 1} filtered out: only ${nonEmptyCount} non-empty values`)
@@ -350,7 +760,6 @@ export function DataTable({
         return true
       })
 
-    // Handle Buy/Sell-specific logic (skip "Buying"/"Selling" rows, forward fill)
     let globalSellingMode = false
     if (importType === "Buy/Sell") {
       let lastConfNo = ''
@@ -369,7 +778,6 @@ export function DataTable({
             return false
           }
         }
-        // Forward fill CONF NO. and CUSTOMER CODE
         row['CONF NO.'] = row['CONF NO.'] || lastConfNo
         row['CUSTOMER CODE'] = row['CUSTOMER CODE'] || lastCustomerCode
         lastConfNo = row['CONF NO.'] || lastConfNo
@@ -379,7 +787,6 @@ export function DataTable({
       })
     }
 
-    // Forward fill DATE and convert to ISO string
     let lastDate: string | undefined = undefined
     processedData = processedData.map((row: BuySellRow | DepositRow, rowIndex) => {
       if (row['DATE']) {
@@ -401,7 +808,6 @@ export function DataTable({
       return row
     })
 
-    // Filter out rows with undefined DATE
     processedData = processedData.filter((row, rowIndex) => {
       if (row['DATE'] === undefined) {
         console.log(`Row ${rowIndex + 1} filtered out: undefined DATE`)
@@ -410,7 +816,6 @@ export function DataTable({
       return true
     })
 
-    // Map to transactionSchema
     const mappedData = processedData.map((row: BuySellRow | DepositRow, index: number) => {
       const baseTransaction: z.infer<typeof transactionSchema> = {
         id: transactionData.length + index + 1,
@@ -450,13 +855,12 @@ export function DataTable({
         console.error(`Invalid transaction data at index ${index}:`, error)
         return null
       }
-    }).filter((item): item is z.infer<typeof transactionSchema> => item !== null)
+    }).filter((item): item is z.infer<typeof transactionSchema> => item !== null && item !== undefined)
 
     console.log(`Processed ${mappedData.length} rows for ${importType}`)
     return mappedData
   }
 
-  // Handle file select and import
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file || !importType) {
@@ -471,7 +875,6 @@ export function DataTable({
         let jsonData: (string | number | Date | undefined)[][]
         if (file.name.endsWith('.csv')) {
           const text = new TextDecoder().decode(data)
-          // Try multiple delimiters
           const delimiters = [',', ';', '\t']
           let parsed = false
           for (const delimiter of delimiters) {
@@ -523,10 +926,18 @@ export function DataTable({
     }
   }
 
-  // Handle import type selection
   const handleImportTypeSelect = (type: "Deposit" | "Withdrawal" | "Buy/Sell") => {
     setImportType(type)
     fileRef.current?.click()
+  }
+
+  // Handlers for SetThresh and SetFlags
+  const handleThresholdChange = (newThresholds: Partial<Thresholds>) => {
+    setThresholds(prev => ({ ...prev, ...newThresholds }))
+  }
+
+  const handleFlagScoresChange = (newScores: Partial<FlagScores>) => {
+    setFlagScores(prev => ({ ...prev, ...newScores }))
   }
 
   return (
@@ -578,8 +989,8 @@ export function DataTable({
                   className="max-w-sm"
                   aria-label="Filter flags by name or flag type"
                 />
-                <SetThresh />
-                <SetFlags />
+                <SetThresh onThresholdChange={handleThresholdChange} />
+                <SetFlags onFlagScoresChange={handleFlagScoresChange} />
               </div>
             </TabsContent>
           </div>
@@ -798,7 +1209,7 @@ export function DataTable({
           <DndContext
             collisionDetection={closestCenter}
             modifiers={[restrictToVerticalAxis]}
-            onDragEnd={(event) => handleDragEnd(event, flagsTable, transactionDataIds, setFlagsData)}
+            onDragEnd={(event) => handleDragEnd(event, flagsTable, flagsDataIds, setFlagsData)}
             sensors={sensors}
             id={sortableId}
           >

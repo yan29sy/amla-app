@@ -1,84 +1,85 @@
+import * as React from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover"
-import { toast } from "sonner"
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog"
 
-export function SetFlags() {
-  // Flag scores data from Python code
-  const flagScores = [
-    { name: "high_value", type: "int", defaultValue: 1 },
-    { name: "cash_deposit", type: "int", defaultValue: 1 },
-    { name: "quick_withdraw", type: "int", defaultValue: 2 },
-    { name: "customer_cash_total", type: "int", defaultValue: 2 },
-    { name: "multiple_deposits", type: "int", defaultValue: 1 },
-    { name: "deposit_high_risk", type: "int", defaultValue: 2 },
-    { name: "flagged_account", type: "int", defaultValue: 3 },
-    { name: "total_value_over_time", type: "int", defaultValue: 2 },
-    { name: "inactivity_deposit", type: "int", defaultValue: 2 },
-    { name: "position_employment", type: "int", defaultValue: 2 },
-    { name: "same_email_different_names", type: "int", defaultValue: 3 },
-    { name: "undeployed_cash", type: "int", defaultValue: 2 },
-    { name: "contact_changes", type: "int", defaultValue: 1 },
-  ]
+interface FlagScores {
+  [key: string]: number;
+}
 
-  // Handler for the Update button
-  const handleUpdate = () => {
-    const updatedFlagScores: { [key: string]: number } = {}
-    flagScores.forEach((score) => {
-      const input = document.getElementById(score.name) as HTMLInputElement | null
-      updatedFlagScores[score.name] = input ? parseInt(input.value) || score.defaultValue : score.defaultValue
-    })
-    console.log("Updated flag scores:", updatedFlagScores)
-    // Add logic here to save updatedFlagScores (e.g., API call or state update)
-    alert("Flag scores updated! Check console for values.")
+interface SetFlagsProps {
+  onFlagScoresChange: (newScores: Partial<FlagScores>) => void;
+}
+
+const FLAG_TYPES = [
+  'high_value',
+  'cash_deposit',
+  'quick_withdraw',
+  'customer_cash_total',
+  'multiple_deposits',
+  'deposit_high_risk',
+  'flagged_account',
+  'total_value_over_time',
+  'inactivity_deposit',
+  'position_employment',
+  'undeployed_cash',
+  'contact_changes',
+  'same_email_different_names',
+]
+
+export function SetFlags({ onFlagScoresChange }: SetFlagsProps) {
+  const [open, setOpen] = React.useState(false)
+  const [scores, setScores] = React.useState<FlagScores>(
+    Object.fromEntries(FLAG_TYPES.map(type => [type, 1]))
+  )
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const { name, value } = e.target
+    setScores(prev => ({ ...prev, [name]: Number(value) }))
+  }
+
+  const handleSubmit = () => {
+    onFlagScoresChange(scores)
+    setOpen(false)
   }
 
   return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <Button
-            className="w-[140px] h-8"
-            variant="outline"
-            size="sm"
-            onClick={() => toast.info("Set Flag triggered")}
-        >
-            Set Flag Scores
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button variant="outline" size="sm">
+          Set Flag Scores
         </Button>
-      </PopoverTrigger>
-      <PopoverContent className="w-100">
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Set Flag Scores</DialogTitle>
+        </DialogHeader>
         <div className="grid gap-4">
-          <div className="space-y-2">
-            <h4 className="leading-none font-medium">Flag Scores</h4>
-            <p className="text-muted-foreground text-sm">
-              Configure scores for flagged transactions.
-            </p>
-          </div>
-          <div className="grid gap-2">
-            {flagScores.map((score) => (
-              <div key={score.name} className="grid grid-cols-2 items-center gap-4">
-                <Label htmlFor={score.name}>
-                  {score.name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
-                </Label>
-                <Input
-                  id={score.name}
-                  type="number"
-                  step="1" // Restrict to integers
-                  defaultValue={score.defaultValue}
-                  className="col-span-1 h-8"
-                />
-              </div>
-            ))}
-          </div>
-          <Button onClick={handleUpdate} className="mt-4 w-full">
-            Update
-          </Button>
+          {FLAG_TYPES.map(flag => (
+            <div key={flag} className="grid grid-cols-4 items-center gap-4">
+              <Label htmlFor={flag} className="col-span-2">
+                {flag.replace(/_/g, ' ')}
+              </Label>
+              <Input
+                id={flag}
+                name={flag}
+                type="number"
+                value={scores[flag]}
+                onChange={handleChange}
+                className="col-span-2"
+              />
+            </div>
+          ))}
+          <Button onClick={handleSubmit}>Apply</Button>
         </div>
-      </PopoverContent>
-    </Popover>
+      </DialogContent>
+    </Dialog>
   )
 }
