@@ -18,21 +18,21 @@ import { FlagsCellViewer } from "@/components/flags-cell-viewer"
 import { useSortable } from "@dnd-kit/sortable"
 
 // Drag handle component
-export function DragHandle({ id }: { id: number }) {
-  const { attributes, listeners } = useSortable({ id })
-  return (
-    <Button
-      {...attributes}
-      {...listeners}
-      variant="ghost"
-      size="icon"
-      className="text-muted-foreground size-7 hover:bg-transparent"
-    >
-      <IconGripVertical className="text-muted-foreground size-3" />
-      <span className="sr-only">Drag to reorder</span>
-    </Button>
-  )
-}
+// export function DragHandle({ id }: { id: number }) {
+//   const { attributes, listeners } = useSortable({ id })
+//   return (
+//     <Button
+//       {...attributes}
+//       {...listeners}
+//       variant="ghost"
+//       size="icon"
+//       className="text-muted-foreground size-7 hover:bg-transparent"
+//     >
+//       <IconGripVertical className="text-muted-foreground size-3" />
+//       <span className="sr-only">Drag to reorder</span>
+//     </Button>
+//   )
+// }
 
 // Columns for transactions table (Raw tab)
 export const transactionColumns: ColumnDef<z.infer<typeof transactionSchema>>[] = [
@@ -72,12 +72,12 @@ export const transactionColumns: ColumnDef<z.infer<typeof transactionSchema>>[] 
     ),
     enableHiding: false,
   },
-  {
-    id: "drag",
-    header: () => null,
-    cell: ({ row }) => <DragHandle id={row.original.id} />,
-    enableHiding: false,
-  },
+  // {
+  //   id: "drag",
+  //   header: () => null,
+  //   cell: ({ row }) => <DragHandle id={row.original.id} />,
+  //   enableHiding: false,
+  // },
   {
     id: "select",
     header: ({ table }) => (
@@ -377,12 +377,12 @@ export const flagsColumns: ColumnDef<z.infer<typeof flagsSchema>>[] = [
     ),
     enableHiding: false,
   },
-  {
-    id: "drag",
-    header: () => null,
-    cell: ({ row }) => <DragHandle id={row.original.id} />,
-    enableHiding: false,
-  },
+  // {
+  //   id: "drag",
+  //   header: () => null,
+  //   cell: ({ row }) => <DragHandle id={row.original.id} />,
+  //   enableHiding: false,
+  // },
   {
     id: "select",
     header: ({ table }) => (

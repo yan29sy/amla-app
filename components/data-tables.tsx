@@ -46,7 +46,7 @@ import { toast } from "sonner"
 import { useRef, useState, useEffect, useMemo } from "react"
 import * as XLSX from "xlsx"
 import { useId } from "react"
-import { differenceInDays, parseISO } from "date-fns"
+import { differenceInDays, parseISO, format } from "date-fns"
 import {
   Dialog,
   DialogContent,
@@ -122,7 +122,7 @@ interface BuySellRow {
   'TRANSFER FEE'?: number;
   'VAT WTAX'?: number;
   'PSE FEE'?: number;
-  'SCCP FEE/PDC FEE'?: number;
+  'SCCP FEE/PDC FEE'?: string | number;
   'CUSTOMER ACCOUNT'?: string | number;
   'USER'?: string | number;
   'STAT'?: string;
@@ -171,6 +171,13 @@ interface FlagScores {
   [key: string]: number;
 }
 
+interface AuditLogEntry {
+  timestamp: string;
+  userId: string;
+  action: string;
+  details: Record<string, any>;
+}
+
 export function DataTable({
   transactions: initialTransactionData = [],
   flags: initialFlagsData = [],
@@ -209,6 +216,7 @@ export function DataTable({
     contact_changes: 1,
     same_email_different_names: 1,
   })
+  const [auditLog, setAuditLog] = useState<AuditLogEntry[]>([])
   const [rowSelection, setRowSelection] = useState({})
   const [transactionColumnVisibility, setTransactionColumnVisibility] = useState<VisibilityState>({
     contactChanges: false,
@@ -930,6 +938,15 @@ export function DataTable({
         setTransactionData((prev) => {
           const newData = [...prev, ...processedData]
           console.log(`Updated transactionData with ${processedData.length} new rows:`, newData)
+          setAuditLog(prev => [
+            ...prev,
+            {
+              timestamp: new Date().toISOString(),
+              userId: whitelistForm.addedBy || "unknown",
+              action: "import_transactions",
+              details: { filename: file.name, importType, count: processedData.length },
+            },
+          ])
           return newData
         })
         toast.success(`Imported ${processedData.length} ${importType} transactions from ${file.name}`)
@@ -951,10 +968,28 @@ export function DataTable({
 
   const handleThresholdChange = (newThresholds: Partial<Thresholds>) => {
     setThresholds(prev => ({ ...prev, ...newThresholds }))
+    setAuditLog(prev => [
+      ...prev,
+      {
+        timestamp: new Date().toISOString(),
+        userId: whitelistForm.addedBy || "unknown",
+        action: "update_thresholds",
+        details: newThresholds,
+      },
+    ])
   }
 
   const handleFlagScoresChange = (newScores: Partial<FlagScores>) => {
     setFlagScores(prev => ({ ...prev, ...newScores }))
+    setAuditLog(prev => [
+      ...prev,
+      {
+        timestamp: new Date().toISOString(),
+        userId: whitelistForm.addedBy || "unknown",
+        action: "update_flag_scores",
+        details: newScores,
+      },
+    ])
   }
 
   const handleEditNote = (flagId: number, note: string) => {
@@ -963,6 +998,15 @@ export function DataTable({
         flag.id === flagId ? { ...flag, notes: note } : flag
       )
     )
+    setAuditLog(prev => [
+      ...prev,
+      {
+        timestamp: new Date().toISOString(),
+        userId: whitelistForm.addedBy || "unknown",
+        action: "edit_note",
+        details: { flagId, note },
+      },
+    ])
     setIsNoteDialogOpen(false)
     setCurrentFlagId(null)
     setNoteText("")
@@ -995,6 +1039,15 @@ export function DataTable({
     try {
       const validatedItems = newWhitelistItems.map(item => whitelistSchema.parse(item))
       setWhitelistData(prev => [...prev, ...validatedItems])
+      setAuditLog(prev => [
+        ...prev,
+        {
+          timestamp: new Date().toISOString(),
+          userId: whitelistForm.addedBy || "unknown",
+          action: "add_to_whitelist",
+          details: { items: validatedItems.map(item => ({ acNum: item.acNum, name: item.name, reason: item.reason })) },
+        },
+      ])
       setRowSelection({})
       setIsWhitelistDialogOpen(false)
       setWhitelistForm({ reason: "", addedBy: "" })
@@ -1002,6 +1055,54 @@ export function DataTable({
     } catch (error) {
       console.error("Invalid whitelist data:", error)
       toast.error("Failed to add to whitelist")
+    }
+  }
+
+  const handleExport = () => {
+    if (flagsData.length === 0) {
+      toast.error("No flagged transactions to export")
+      return
+    }
+
+    try {
+      const exportData = flagsData.map(flag => ({
+        ID: flag.id,
+        "Transaction ID": flag.transactionId,
+        Flag: flag.flag,
+        "Susp. Code": flag.suspCode,
+        Reason: flag.reason,
+        Score: flag.score,
+        "Susp. Code Desc.": flag.suspCodeDesc,
+        "A/C#": flag.acNum,
+        Name: flag.name,
+        Type: flag.type,
+        Amount: flag.amount,
+        Date: flag.date,
+        "Bank Code": flag.bankCode,
+        Country: flag.country,
+        Notes: flag.notes,
+      }))
+
+      const worksheet = XLSX.utils.json_to_sheet(exportData)
+      const workbook = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(workbook, worksheet, "Flagged Transactions")
+      const timestamp = format(new Date(), "yyyy-MM-dd_HH-mm-ss")
+      const filename = `flagged_transactions_${timestamp}.xlsx`
+      XLSX.writeFile(workbook, filename)
+
+      setAuditLog(prev => [
+        ...prev,
+        {
+          timestamp: new Date().toISOString(),
+          userId: whitelistForm.addedBy || "unknown",
+          action: "export_flags",
+          details: { filename, count: flagsData.length },
+        },
+      ])
+      toast.success(`Exported ${flagsData.length} flagged transactions to ${filename}`)
+    } catch (error) {
+      console.error("Export error:", error)
+      toast.error("Failed to export flagged transactions")
     }
   }
 
@@ -1094,7 +1195,7 @@ export function DataTable({
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => toast.info("Export triggered")}
+                onClick={handleExport}
               >
                 <IconPlus className="mr-2 h-4 w-4" />
                 <span className="hidden lg:inline">Export</span>
